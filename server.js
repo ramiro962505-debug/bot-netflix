@@ -25,13 +25,12 @@ app.post('/extraer-temporal', async (req, res) => {
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
-                '--disable-blink-features=AutomationControlled',
-                '--window-size=1920,1080'
+                '--disable-blink-features=AutomationControlled'
             ]
         });
 
         const page = await browser.newPage();
-        await page.setViewport({ width: 1920, height: 1080 });
+        await page.setViewport({ width: 1280, height: 800 });
         
         await page.evaluateOnNewDocument(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -39,9 +38,10 @@ app.post('/extraer-temporal', async (req, res) => {
 
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-        await page.goto(url, { waitUntil: 'networkidle2', timeout: 35000 });
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await new Promise(r => setTimeout(r, 2000));
 
-        // Intentar dar clic si hay botón de confirmación
+        // 1. Si hay botón de "Obtener código" / "Continuar", hacer clic
         try {
             await page.evaluate(() => {
                 const elementos = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
@@ -53,53 +53,42 @@ app.post('/extraer-temporal', async (req, res) => {
                     }
                 }
             });
-            await new Promise(r => setTimeout(r, 3000));
-        } catch (e) {
-            console.log('[-] Sin interacción previa:', e.message);
-        }
+            await new Promise(r => setTimeout(r, 2500));
+        } catch (e) {}
 
-        // Extraer texto y código
-        const resultado = await page.evaluate(() => {
-            const body = document.body;
-            if (!body) return { codigo: null, texto: '' };
+        // 2. Extraer el código ÚNICAMENTE de elementos clave
+        const codigo = await page.evaluate(() => {
+            // Descartar scripts, estilos y footers
+            const clone = document.body.cloneNode(true);
+            clone.querySelectorAll('script, style, footer, .site-footer, noscript').forEach(e => e.remove());
 
-            const clone = body.cloneNode(true);
-            clone.querySelectorAll('script, style, footer, noscript').forEach(el => el.remove());
-            const textContent = clone.innerText || clone.textContent || '';
-
-            // 1. Elementos destacados
-            const tags = clone.querySelectorAll('h1, h2, h3, strong, b, div, span');
-            for (let el of tags) {
-                const txt = el.innerText || el.textContent || '';
-                const m = txt.trim().match(/^(?<!\d)[0-9]{4}(?!\d)$/);
-                if (m && !['2023', '2024', '2025', '2026', '2027', '0000'].includes(m[0])) {
-                    return { codigo: m[0], texto: textContent.substring(0, 300) };
+            // Buscar en títulos y números destacados
+            const elementos = clone.querySelectorAll('h1, h2, h3, strong, b, .travel-code, [data-uia*="code"]');
+            for (let el of elementos) {
+                const txt = (el.innerText || el.textContent || '').trim();
+                const m = txt.match(/^(?<!\d)[0-9]{4}(?!\d)$/);
+                if (m && !['2023', '2024', '2025', '2026', '2027', '0000', '7652'].includes(m[0])) {
+                    return m[0];
                 }
             }
 
-            // 2. Cercano a palabras clave
-            const regexCerca = /(?:c[oó]digo|code)[\s\S]{1,60}?(?<!\d)([0-9]{4})(?!\d)/i;
-            const matchCerca = textContent.match(regexCerca);
-            if (matchCerca && !['2023', '2024', '2025', '2026', '2027', '0000'].includes(matchCerca[1])) {
-                return { codigo: matchCerca[1], texto: textContent.substring(0, 300) };
+            // Buscar frases con "código"
+            const bodyTxt = clone.innerText || clone.textContent || '';
+            const mCerca = bodyTxt.match(/(?:c[oó]digo|code)[\s\S]{1,50}?(?<!\d)([0-9]{4})(?!\d)/i);
+            if (mCerca && !['2023', '2024', '2025', '2026', '2027', '0000', '7652'].includes(mCerca[1])) {
+                return mCerca[1];
             }
 
-            // 3. Fallback en texto
-            const matches = textContent.match(/(?<!\d)[0-9]{4}(?!\d)/g) || [];
-            const cod = matches.find(n => !['2023', '2024', '2025', '2026', '2027', '0000', '7652'].includes(n));
-
-            return { codigo: cod || null, texto: textContent.substring(0, 400) };
+            return null;
         });
 
-        console.log(`[i] Texto extraído: ${resultado.texto.replace(/\n/g, ' ')}`);
-        console.log(`[i] Código detectado: ${resultado.codigo}`);
-
+        console.log(`[i] Código extraído: ${codigo}`);
         await browser.close();
 
-        if (resultado.codigo) {
-            return res.json({ status: 'success', codigo: resultado.codigo });
+        if (codigo) {
+            return res.json({ status: 'success', codigo: codigo });
         } else {
-            return res.status(404).json({ status: 'error', message: 'No se visualizó el código', preview: resultado.texto });
+            return res.status(404).json({ status: 'error', message: 'No se generó código (posible enlace expirado)' });
         }
     } catch (err) {
         if (browser) await browser.close();
