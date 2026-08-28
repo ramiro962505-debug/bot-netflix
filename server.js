@@ -14,14 +14,14 @@ app.post('/extraer-temporal', async (req, res) => {
     let { url } = req.body;
     if (!url) return res.status(400).json({ error: 'URL requerida' });
 
-    // 1. Limpieza y decodificación completa de la URL
+    // Limpieza de URL codificada
     try {
         url = decodeURIComponent(url.replace(/=3D/g, '='));
     } catch (e) {
         url = url.replace(/=3D/g, '=');
     }
 
-    console.log(`[+] Procesando URL limpia: ${url}`);
+    console.log(`[+] Procesando URL: ${url}`);
     let browser = null;
 
     try {
@@ -40,66 +40,82 @@ app.post('/extraer-temporal', async (req, res) => {
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 800 });
 
-        // Bloquear recursos pesados innecesarios (imágenes, CSS pesado, fuentes) para máxima velocidad
-        await page.setRequestInterception(true);
-        page.on('request', (req) => {
-            const tipo = req.resourceType();
-            if (['image', 'stylesheet', 'font', 'media'].includes(tipo)) {
-                req.abort();
-            } else {
-                req.continue();
-            }
-        });
-
         await page.evaluateOnNewDocument(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         });
 
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
-        // Carga rápida
+        // Carga de la página con suficiente margen
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 3000));
 
-        // 2. Dar clic automático si hay botón de confirmación o solicitud
+        // 1. Clic automático en botones de confirmación de Netflix
         try {
-            await page.evaluate(() => {
+            const botonClickeado = await page.evaluate(() => {
                 const elementos = Array.from(document.querySelectorAll('button, a, div[role="button"], input[type="submit"]'));
                 for (let el of elementos) {
                     const txt = (el.innerText || el.textContent || el.value || '').trim().toLowerCase();
-                    if (txt.includes('obtener código') || txt.includes('get code') || txt.includes('enviar código') || txt.includes('continuar') || txt.includes('continue')) {
+                    if (
+                        txt.includes('obtener código') || 
+                        txt.includes('get code') || 
+                        txt.includes('enviar código') || 
+                        txt.includes('send code') ||
+                        txt.includes('actualizar hogar') ||
+                        txt.includes('update household') ||
+                        txt.includes('sí, soy yo') ||
+                        txt.includes('yes, it was me') ||
+                        txt.includes('continuar') || 
+                        txt.includes('continue')
+                    ) {
                         el.click();
-                        break;
+                        return true;
                     }
                 }
+                return false;
             });
-            await new Promise(r => setTimeout(r, 2500));
-        } catch (e) {}
 
-        // 3. Extraer el código numérico
+            if (botonClickeado) {
+                console.log('[+] Botón presionado. Esperando generación de código...');
+                await new Promise(r => setTimeout(r, 4000));
+            }
+        } catch (e) {
+            console.log('[-] No se requirió clic o no se encontró botón');
+        }
+
+        // 2. Extraer el código visible generado
         const codigo = await page.evaluate(() => {
             const body = document.body;
             if (!body) return null;
 
-            const clone = body.cloneNode(true);
-            clone.querySelectorAll('script, style, footer, noscript').forEach(el => el.remove());
-            const textContent = clone.innerText || clone.textContent || '';
-
-            // A. Buscar en títulos o etiquetas destacadas
-            const tags = clone.querySelectorAll('h1, h2, h3, strong, b, div, span');
+            // Prioridad A: Buscar en elementos destacados o títulos
+            const tags = Array.from(body.querySelectorAll('h1, h2, h3, strong, b, div, span, p'));
             for (let el of tags) {
                 const txt = (el.innerText || el.textContent || '').trim();
-                const m = txt.match(/^(?<!\d)[0-9]{4}(?!\d)$/);
-                if (m && !['2023', '2024', '2025', '2026', '2027', '0000', '7652'].includes(m[0])) {
-                    return m[0];
+                // Si el elemento contiene SOLO 4 dígitos
+                if (/^[0-9]{4}$/.test(txt)) {
+                    if (!['2023', '2024', '2025', '2026', '2027', '0000', '7652'].includes(txt)) {
+                        return txt;
+                    }
                 }
             }
 
-            // B. Buscar cerca de la palabra "código" o "code"
-            const regexCerca = /(?:c[oó]digo|code)[\s\S]{1,60}?(?<!\d)([0-9]{4})(?!\d)/i;
-            const matchCerca = textContent.match(regexCerca);
+            // Prioridad B: Buscar texto completo en el cuerpo
+            const fullText = body.innerText || body.textContent || '';
+            const regexCerca = /(?:c[oó]digo|code|temporal)[\s\S]{1,60}?(?<!\d)([0-9]{4})(?!\d)/i;
+            const matchCerca = fullText.match(regexCerca);
             if (matchCerca && !['2023', '2024', '2025', '2026', '2027', '0000', '7652'].includes(matchCerca[1])) {
                 return matchCerca[1];
+            }
+
+            // Prioridad C: Cualquier coincidencia de 4 dígitos aislados
+            const matches = fullText.match(/(?<!\d)[0-9]{4}(?!\d)/g);
+            if (matches) {
+                for (let m of matches) {
+                    if (!['2023', '2024', '2025', '2026', '2027', '0000', '7652'].includes(m)) {
+                        return m;
+                    }
+                }
             }
 
             return null;
