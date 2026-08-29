@@ -14,7 +14,7 @@ app.post('/extraer-temporal', async (req, res) => {
     let { url } = req.body;
     if (!url) return res.status(400).json({ error: 'URL requerida' });
 
-    // Limpieza segura sin romper parámetros base64 (%3D)
+    // Limpieza segura de caracteres codificados
     url = url.replace(/=3D/g, '=').replace(/&amp;/g, '&').trim();
 
     console.log(`[+] Procesando URL de Netflix: ${url}`);
@@ -45,7 +45,7 @@ app.post('/extraer-temporal', async (req, res) => {
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
         await new Promise(r => setTimeout(r, 3000));
 
-        // 1. Clic en botones de confirmación / obtener código
+        // 1. Clic automático en los botones de confirmación / viaje / código
         try {
             const clickRealizado = await page.evaluate(() => {
                 const elementos = Array.from(document.querySelectorAll('button, a, div[role="button"], input[type="submit"]'));
@@ -84,11 +84,10 @@ app.post('/extraer-temporal', async (req, res) => {
             const body = document.body;
             if (!body) return null;
 
-            // Descartar scripts y estilos
             const clone = body.cloneNode(true);
             clone.querySelectorAll('script, style, footer, noscript').forEach(e => e.remove());
 
-            // A. Buscar en etiquetas destacadas que contengan SOLO 4 dígitos
+            // Prioridad A: Buscar en etiquetas directas con exactamente 4 dígitos
             const tags = Array.from(clone.querySelectorAll('h1, h2, h3, strong, b, div, span, p'));
             for (let el of tags) {
                 const txt = (el.innerText || el.textContent || '').trim();
@@ -99,14 +98,14 @@ app.post('/extraer-temporal', async (req, res) => {
                 }
             }
 
-            // B. Buscar por contexto textual
+            // Prioridad B: Buscar por contexto de texto
             const fullText = clone.innerText || clone.textContent || '';
             const matchCerca = fullText.match(/(?:c[oó]digo|code|temporal)[\s\S]{1,60}?(?<!\d)([0-9]{4})(?!\d)/i);
             if (matchCerca && !['2023', '2024', '2025', '2026', '2027', '0000', '7652'].includes(matchCerca[1])) {
                 return matchCerca[1];
             }
 
-            // C. Cualquier coincidencia limpia de 4 dígitos
+            // Prioridad C: Coincidencia limpia de 4 dígitos aislados
             const matches = fullText.match(/(?<!\d)[0-9]{4}(?!\d)/g);
             if (matches) {
                 for (let m of matches) {
