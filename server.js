@@ -1,41 +1,57 @@
 const express = require('express');
 
 const app = express();
-app.use(express.json({ limit: '15mb' }));
+app.use(express.json({ limit: '20mb' }));
 
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.json({ status: 'ok', mensaje: 'Servicio de extracción activo' });
+    res.json({ status: 'ok', mensaje: 'Servicio extractor activo' });
 });
 
 app.post('/extraer-temporal', async (req, res) => {
     let { raw, html, url } = req.body;
-    let textoAnalizar = (raw || '') + ' ' + (html || '') + ' ' + (url || '');
+    let contenido = (raw || '') + ' ' + (html || '') + ' ' + (url || '');
 
-    if (!textoAnalizar.trim()) {
-        return res.status(400).json({ error: 'No se envió contenido' });
+    if (!contenido.trim()) {
+        return res.status(400).json({ error: 'Contenido vacío' });
     }
 
-    // Limpieza de caracteres quoted-printable
-    let limpio = textoAnalizar
+    // 1. Limpiar completamente la codificación Quoted-Printable de IMAP
+    let textoLimpio = contenido
         .replace(/=\r\n/g, '')
         .replace(/=\n/g, '')
         .replace(/=\r/g, '')
         .replace(/=3D/gi, '=')
         .replace(/&amp;/gi, '&');
 
-    // Buscar el link de viaje / hogar
-    let patronLink = /https?:\/\/(?:www\.)?netflix\.com\/(?:[^\s"'<>]+)?(?:travel\/verify|account\/travel|update-primary-location|nftoken=[^\s"'<>]+)[^\s"'<>]*/i;
-    let match = limpio.match(patronLink);
+    // 2. Buscar exclusivamente el enlace con nftoken o travel/verify
+    let patron = /https?:\/\/(?:www\.)?netflix\.com\/(?:[a-zA-Z0-9_-]+\/)?(?:account\/travel\/verify|travel\/verify|update-primary-location)\?[^\s"'<>]+/i;
+    let match = textoLimpio.match(patron);
+
+    // Fallback: si viene en otro formato pero contiene nftoken
+    if (!match) {
+        let patronToken = /https?:\/\/(?:www\.)?netflix\.com\/[^\s"'<>]*nftoken=[a-zA-Z0-9_-]+/i;
+        match = textoLimpio.match(patronToken);
+    }
 
     if (match) {
-        let urlExtraida = match[0].trim().replace(/["'<>]+$/, '').replace(/=+$/, '');
-        console.log(`[+] Enlace extraído: ${urlExtraida}`);
-        return res.json({ status: 'success', codigo: urlExtraida });
+        let enlaceFinal = match[0].trim();
+        // Quitar caracteres sobrantes al final
+        enlaceFinal = enlaceFinal.replace(/["'<>]+$/, '').replace(/=+$/, '');
+
+        console.log(`[+] Enlace legítimo extraído: ${enlaceFinal}`);
+        return res.json({
+            status: 'success',
+            codigo: enlaceFinal
+        });
     } else {
-        return res.status(404).json({ status: 'error', message: 'No se encontró enlace' });
+        console.log('[-] No se encontró enlace con token de verificación');
+        return res.status(404).json({
+            status: 'error',
+            message: 'No se encontró enlace válido de verificación'
+        });
     }
 });
 
-app.listen(PORT, () => console.log(`Servicio activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Servicio corriendo en puerto ${PORT}`));
