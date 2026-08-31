@@ -1,7 +1,7 @@
 const express = require('express');
 
 const app = express();
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '25mb' }));
 
 const PORT = process.env.PORT || 3000;
 
@@ -11,47 +11,46 @@ app.get('/', (req, res) => {
 
 app.post('/extraer-temporal', async (req, res) => {
     let { raw, html, url } = req.body;
-    let contenido = (raw || '') + ' ' + (html || '') + ' ' + (url || '');
+    let textoAnalizar = (raw || '') + ' ' + (html || '') + ' ' + (url || '');
 
-    if (!contenido.trim()) {
+    if (!textoAnalizar.trim()) {
         return res.status(400).json({ error: 'Contenido vacío' });
     }
 
-    // 1. Limpiar completamente la codificación Quoted-Printable de IMAP
-    let textoLimpio = contenido
+    // 1. Limpieza estricta de saltos de línea y quoted-printable
+    let limpio = textoAnalizar
         .replace(/=\r\n/g, '')
         .replace(/=\n/g, '')
         .replace(/=\r/g, '')
         .replace(/=3D/gi, '=')
         .replace(/&amp;/gi, '&');
 
-    // 2. Buscar exclusivamente el enlace con nftoken o travel/verify
-    let patron = /https?:\/\/(?:www\.)?netflix\.com\/(?:[a-zA-Z0-9_-]+\/)?(?:account\/travel\/verify|travel\/verify|update-primary-location)\?[^\s"'<>]+/i;
-    let match = textoLimpio.match(patron);
+    // 2. Extraer el enlace de viaje/hogar con todo su token (soporta +, /, =, &, etc.)
+    let patron = /https?:\/\/(?:www\.)?netflix\.com\/(?:[^\s"'<>]+)?(?:account\/travel\/verify|travel\/verify|update-primary-location)[^\s"'<>]+/i;
+    let match = limpio.match(patron);
 
-    // Fallback: si viene en otro formato pero contiene nftoken
     if (!match) {
-        let patronToken = /https?:\/\/(?:www\.)?netflix\.com\/[^\s"'<>]*nftoken=[a-zA-Z0-9_-]+/i;
-        match = textoLimpio.match(patronToken);
+        let patronToken = /https?:\/\/(?:www\.)?netflix\.com\/[^\s"'<>]*nftoken=[^\s"'<>]+/i;
+        match = limpio.match(patronToken);
     }
 
     if (match) {
         let enlaceFinal = match[0].trim();
-        // Quitar caracteres sobrantes al final
-        enlaceFinal = enlaceFinal.replace(/["'<>]+$/, '').replace(/=+$/, '');
+        // Limpiar únicamente comillas o corchetes de cierre al final
+        enlaceFinal = enlaceFinal.replace(/[>"';\)]+$/, '');
 
-        console.log(`[+] Enlace legítimo extraído: ${enlaceFinal}`);
+        console.log(`[+] Enlace completo extraído con éxito:\n${enlaceFinal}`);
         return res.json({
             status: 'success',
             codigo: enlaceFinal
         });
     } else {
-        console.log('[-] No se encontró enlace con token de verificación');
+        console.log('[-] No se detectó el enlace completo con nftoken');
         return res.status(404).json({
             status: 'error',
-            message: 'No se encontró enlace válido de verificación'
+            message: 'No se encontró enlace válido de Netflix'
         });
     }
 });
 
-app.listen(PORT, () => console.log(`Servicio corriendo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Extractor activo en puerto ${PORT}`));
