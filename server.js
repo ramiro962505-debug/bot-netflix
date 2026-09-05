@@ -1,4 +1,5 @@
 const express = require('express');
+const puppeteer = require('puppeteer');
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
@@ -6,51 +7,60 @@ app.use(express.json({ limit: '25mb' }));
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.json({ status: 'ok', mensaje: 'Servicio extractor activo' });
+    res.json({ status: 'ok', mensaje: 'Servicio extractor de 4 dígitos activo' });
 });
 
-app.post('/extraer-temporal', async (req, res) => {
-    let { raw, html, url } = req.body;
-    let textoAnalizar = (raw || '') + ' ' + (html || '') + ' ' + (url || '');
+app.post('/obtener-4-digitos', async (req, res) => {
+    const { link } = req.body;
 
-    if (!textoAnalizar.trim()) {
-        return res.status(400).json({ error: 'Contenido vacío' });
+    if (!link || !link.startsWith('http')) {
+        return res.status(400).json({ status: 'error', message: 'Enlace inválido' });
     }
 
-    // 1. Limpieza estricta de saltos de línea y quoted-printable
-    let limpio = textoAnalizar
-        .replace(/=\r\n/g, '')
-        .replace(/=\n/g, '')
-        .replace(/=\r/g, '')
-        .replace(/=3D/gi, '=')
-        .replace(/&amp;/gi, '&');
-
-    // 2. Extraer el enlace de viaje/hogar con todo su token (soporta +, /, =, &, etc.)
-    let patron = /https?:\/\/(?:www\.)?netflix\.com\/(?:[^\s"'<>]+)?(?:account\/travel\/verify|travel\/verify|update-primary-location)[^\s"'<>]+/i;
-    let match = limpio.match(patron);
-
-    if (!match) {
-        let patronToken = /https?:\/\/(?:www\.)?netflix\.com\/[^\s"'<>]*nftoken=[^\s"'<>]+/i;
-        match = limpio.match(patronToken);
-    }
-
-    if (match) {
-        let enlaceFinal = match[0].trim();
-        // Limpiar únicamente comillas o corchetes de cierre al final
-        enlaceFinal = enlaceFinal.replace(/[>"';\)]+$/, '');
-
-        console.log(`[+] Enlace completo extraído con éxito:\n${enlaceFinal}`);
-        return res.json({
-            status: 'success',
-            codigo: enlaceFinal
+    let browser = null;
+    try {
+        console.log(`[+] Abriendo enlace en segundo plano para extraer 4 dígitos...`);
+        browser = await puppeteer.launch({
+            headless: 'new',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu'
+            ]
         });
-    } else {
-        console.log('[-] No se detectó el enlace completo con nftoken');
-        return res.status(404).json({
-            status: 'error',
-            message: 'No se encontró enlace válido de Netflix'
-        });
+
+        const page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+
+        await page.goto(link, { waitUntil: 'networkidle2', timeout: 25000 });
+
+        // Esperar a que renderice la página con el código
+        await new Promise(r => setTimeout(r, 4000));
+
+        // Extraer el texto completo renderizado
+        const textoPagina = await page.evaluate(() => document.body.innerText);
+
+        // Buscar patrón de 4 dígitos en el texto renderizado
+        let match = textoPagina.match(/(?<!\d)[0-9]{4}(?!\d)/);
+
+        if (match) {
+            const cuatroDigitos = match[0];
+            console.log(`[OK] Código de 4 dígitos capturado con éxito: ${cuatroDigitos}`);
+            await browser.close();
+            return res.json({ status: 'success', codigo: cuatroDigitos });
+        } else {
+            console.log('[-] No se detectaron 4 dígitos en la pantalla.');
+            await browser.close();
+            return res.status(404).json({ status: 'error', message: 'No se visualizó el código de 4 dígitos' });
+        }
+
+    } catch (error) {
+        if (browser) await browser.close();
+        console.error('[-] Error en Puppeteer:', error.message);
+        return res.status(500).json({ status: 'error', message: error.message });
     }
 });
 
-app.listen(PORT, () => console.log(`Extractor activo en puerto ${PORT}`));
+app.listen(PORT, () => console.log(`Extractor corriendo en puerto ${PORT}`));
